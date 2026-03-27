@@ -3,10 +3,10 @@ import pandas as pd
 import io
 
 # Set Page Config
-st.set_page_config(page_title="Amazon Report Merger", layout="wide")
+st.set_page_config(page_title="Amazon Brand Dashboard", layout="wide")
 
-st.title("📦 Amazon Report Merger Tool")
-st.write("Combine Business & Sponsored Reports with Brand & Item Classification.")
+st.title("📊 Amazon Brand & Performance Dashboard")
+st.write("Full Performance View: Organic vs. Ad Sales with Brand & Category Summary.")
 
 def clean_currency(value):
     if pd.isna(value): return 0.0
@@ -20,29 +20,38 @@ def clean_currency(value):
     return float(value)
 
 def get_brand(title):
-    """Extracts the brand name from the title, mapping Avenue to Maison."""
+    """Extracts Brand and maps Avenue to Maison."""
     title_upper = str(title).upper()
     if 'PARIS COLLECTION' in title_upper: return 'Paris Collection'
     if 'CP TRENDIES' in title_upper or 'CPT' in title_upper: return 'CP Trendies'
     if 'CREATION LAMIS' in title_upper: return 'Creation Lamis'
     if 'JEAN PAUL DUPONT' in title_upper: return 'Jean Paul Dupont'
     if 'DORALL COLLECTION' in title_upper: return 'Dorall Collection'
-    if 'AVENUE' in title_upper: return "Maison de L'Avenir"
+    if 'AVENUE' in title_upper or 'MAISON' in title_upper: return "Maison de L'Avenir"
     return 'Other'
 
-def classify_item_type(title):
-    """Categorizes items strictly. No General Perfume."""
-    title = str(title).lower()
-    if 'eau de parfum' in title or ' edp' in title:
+def classify_item_type(title, brand):
+    """Refined classification with Maison fallback."""
+    title_low = str(title).lower()
+    
+    # 1. Fragrances
+    if 'parfum' in title_low or 'edp' in title_low or 'elixir' in title_low:
         return 'Eau de Parfum'
-    if 'eau de toilette' in title or ' edt' in title:
+    if 'toilette' in title_low or 'edt' in title_low or 'fresh perfume' in title_low:
         return 'Eau de Toilette'
-    if any(k in title for k in ['makeup', 'lipstick', 'nail polish', 'eyebrow', 'blusher', 'compact powder']):
+    
+    # 2. Other Categories
+    if any(k in title_low for k in ['makeup', 'lipstick', 'nail polish', 'eyebrow', 'foundation', 'compact powder']):
         return 'Makeup'
-    if any(k in title for k in ['hair cream', 'hair food', 'hair serum', 'hair care']):
+    if any(k in title_low for k in ['hair cream', 'hair food', 'hair serum', 'hair mask', 'hair oil', 'treatment', 'shampoo']):
         return 'Hair Care'
-    if any(k in title for k in ['body lotion', 'body scrub', 'aloe vera gel', 'glycerin', 'moisturizer']):
-        return 'Skin Care'
+    if any(k in title_low for k in ['body lotion', 'body scrub', 'aloe vera gel', 'cream', 'mist', 'spray', 'baby', 'oil']):
+        return 'Skin & Body Care'
+    
+    # 3. Maison Specific Fallback
+    if brand == "Maison de L'Avenir":
+        return 'Maison'
+        
     return 'NA'
 
 def load_data(file):
@@ -67,50 +76,65 @@ if biz_file and sp_file:
         biz_processed = biz_df[['(Child) ASIN', 'Units Ordered', 'Ordered Product Sales', 'Title']].copy()
         biz_processed['Ordered Product Sales'] = biz_processed['Ordered Product Sales'].apply(clean_currency)
         
-        # 2. Add Brand (with Avenue -> Maison mapping) and Item Type
+        # Determine Brand first so we can use it for Item Type fallback
         biz_processed['Brand'] = biz_processed['Title'].apply(get_brand)
-        biz_processed['Item Type'] = biz_processed['Title'].apply(classify_item_type)
-
+        biz_processed['Item Type'] = biz_processed.apply(lambda x: classify_item_type(x['Title'], x['Brand']), axis=1)
+        
         biz_processed = biz_processed.rename(columns={
-            '(Child) ASIN': 'ASIN',
-            'Title': 'Product Name',
-            'Units Ordered': 'Total Orders',
+            '(Child) ASIN': 'ASIN', 
+            'Title': 'Product Name', 
+            'Units Ordered': 'Total Orders', 
             'Ordered Product Sales': 'Total Sales'
         })
 
-        # 3. Process Sponsored Product Report
+        # 2. Process Sponsored Product Report
         sp_subset = sp_df[['Advertised ASIN', 'Spend', '7 Day Total Sales ', 'Clicks']].copy()
         sp_subset['Spend'] = sp_subset['Spend'].apply(clean_currency)
         sp_subset['7 Day Total Sales '] = sp_subset['7 Day Total Sales '].apply(clean_currency)
         
         sp_pivoted = sp_subset.groupby('Advertised ASIN').agg({
-            'Spend': 'sum', 'Clicks': 'sum', '7 Day Total Sales ': 'sum'
+            'Spend': 'sum', 
+            '7 Day Total Sales ': 'sum', 
+            'Clicks': 'sum'
         }).reset_index().rename(columns={
-            'Advertised ASIN': 'ASIN', 'Spend': 'Ad Spends', 
-            'Clicks': 'Ad Clicks', '7 Day Total Sales ': 'Ad Sales'
+            'Advertised ASIN': 'ASIN', 
+            'Spend': 'Ad Spends', 
+            '7 Day Total Sales ': 'Ad Sales', 
+            'Clicks': 'Ad Clicks'
         })
 
-        # 4. Final Merge
-        final_df = pd.merge(biz_processed, sp_pivoted, on='ASIN', how='left')
-        final_df[['Ad Spends', 'Ad Clicks', 'Ad Sales']] = final_df[['Ad Spends', 'Ad Clicks', 'Ad Sales']].fillna(0)
+        # 3. Final Merge & Organic Calculation
+        final_df = pd.merge(biz_processed, sp_pivoted, on='ASIN', how='left').fillna(0)
+        final_df['Organic Sales'] = (final_df['Total Sales'] - final_df['Ad Sales']).clip(lower=0)
 
-        # Final Column Order
-        final_df = final_df[['ASIN', 'Brand', 'Item Type', 'Product Name', 'Total Orders', 'Total Sales', 'Ad Spends', 'Ad Clicks', 'Ad Sales']]
+        # --- SUMMARY SECTION ---
+        st.divider()
+        st.subheader("🏢 Brand Performance Summary")
+        
+        brand_summary = final_df.groupby('Brand').agg({
+            'Organic Sales': 'sum',
+            'Ad Sales': 'sum',
+            'Total Sales': 'sum',
+            'Ad Spends': 'sum'
+        }).reset_index()
 
-        st.subheader("Final Combined Report Preview")
+        brand_summary['Ad Contribution %'] = (brand_summary['Ad Sales'] / brand_summary['Total Sales'] * 100).round(2).fillna(0)
         
-        # Summary View
-        c1, c2 = st.columns(2)
-        c1.write("Brand Breakdown:")
-        c1.write(final_df['Brand'].value_counts())
-        c2.write("Item Type Breakdown:")
-        c2.write(final_df['Item Type'].value_counts())
-        
+        st.table(brand_summary.style.format({
+            'Organic Sales': '{:,.2f} AED', 'Ad Sales': '{:,.2f} AED',
+            'Total Sales': '{:,.2f} AED', 'Ad Spends': '{:,.2f} AED',
+            'Ad Contribution %': '{:.2f}%'
+        }))
+
+        # 4. Detailed Data Table
+        st.divider()
+        st.subheader("📄 Product Level Detail")
+        final_df = final_df[['ASIN', 'Brand', 'Item Type', 'Product Name', 'Total Orders', 'Total Sales', 'Ad Sales', 'Organic Sales', 'Ad Spends']]
         st.dataframe(final_df, use_container_width=True)
 
         # Export
         csv_data = final_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Combined CSV", csv_data, "combined_amazon_report.csv", "text/csv")
+        st.download_button("📥 Download Combined Report", csv_data, "combined_amazon_report.csv", "text/csv")
 
     except Exception as e:
         st.error(f"Error: {e}")
