@@ -6,12 +6,11 @@ import io
 st.set_page_config(page_title="Amazon Brand Dashboard", layout="wide")
 
 st.title("📊 Amazon Brand & Performance Dashboard")
-st.write("Full Performance View: Organic vs. Ad Sales with Brand & Category Summary.")
+st.write("Consolidated view of Organic vs. Ad Performance with Strict Item Classification.")
 
 def clean_currency(value):
     if pd.isna(value): return 0.0
     if isinstance(value, str):
-        # Remove AED, non-breaking spaces, and commas
         clean_val = value.replace('AED', '').replace('\xa0', '').replace(',', '').strip()
         try:
             return float(clean_val)
@@ -20,7 +19,6 @@ def clean_currency(value):
     return float(value)
 
 def get_brand(title):
-    """Extracts Brand and maps Avenue to Maison."""
     title_upper = str(title).upper()
     if 'PARIS COLLECTION' in title_upper: return 'Paris Collection'
     if 'CP TRENDIES' in title_upper or 'CPT' in title_upper: return 'CP Trendies'
@@ -31,27 +29,19 @@ def get_brand(title):
     return 'Other'
 
 def classify_item_type(title, brand):
-    """Refined classification with Maison fallback."""
     title_low = str(title).lower()
-    
-    # 1. Fragrances
     if 'parfum' in title_low or 'edp' in title_low or 'elixir' in title_low:
         return 'Eau de Parfum'
     if 'toilette' in title_low or 'edt' in title_low or 'fresh perfume' in title_low:
         return 'Eau de Toilette'
-    
-    # 2. Other Categories
     if any(k in title_low for k in ['makeup', 'lipstick', 'nail polish', 'eyebrow', 'foundation', 'compact powder']):
         return 'Makeup'
     if any(k in title_low for k in ['hair cream', 'hair food', 'hair serum', 'hair mask', 'hair oil', 'treatment', 'shampoo']):
         return 'Hair Care'
     if any(k in title_low for k in ['body lotion', 'body scrub', 'aloe vera gel', 'cream', 'mist', 'spray', 'baby', 'oil']):
         return 'Skin & Body Care'
-    
-    # 3. Maison Specific Fallback
     if brand == "Maison de L'Avenir":
         return 'Maison'
-        
     return 'NA'
 
 def load_data(file):
@@ -72,44 +62,38 @@ if biz_file and sp_file:
         biz_df = load_data(biz_file)
         sp_df = load_data(sp_file)
 
-        # 1. Process Business Report
+        # 1. Data Processing
         biz_processed = biz_df[['(Child) ASIN', 'Units Ordered', 'Ordered Product Sales', 'Title']].copy()
         biz_processed['Ordered Product Sales'] = biz_processed['Ordered Product Sales'].apply(clean_currency)
-        
-        # Determine Brand first so we can use it for Item Type fallback
         biz_processed['Brand'] = biz_processed['Title'].apply(get_brand)
         biz_processed['Item Type'] = biz_processed.apply(lambda x: classify_item_type(x['Title'], x['Brand']), axis=1)
-        
-        biz_processed = biz_processed.rename(columns={
-            '(Child) ASIN': 'ASIN', 
-            'Title': 'Product Name', 
-            'Units Ordered': 'Total Orders', 
-            'Ordered Product Sales': 'Total Sales'
-        })
+        biz_processed = biz_processed.rename(columns={'(Child) ASIN': 'ASIN', 'Title': 'Product Name', 'Units Ordered': 'Total Orders', 'Ordered Product Sales': 'Total Sales'})
 
-        # 2. Process Sponsored Product Report
         sp_subset = sp_df[['Advertised ASIN', 'Spend', '7 Day Total Sales ', 'Clicks']].copy()
         sp_subset['Spend'] = sp_subset['Spend'].apply(clean_currency)
         sp_subset['7 Day Total Sales '] = sp_subset['7 Day Total Sales '].apply(clean_currency)
-        
-        sp_pivoted = sp_subset.groupby('Advertised ASIN').agg({
-            'Spend': 'sum', 
-            '7 Day Total Sales ': 'sum', 
-            'Clicks': 'sum'
-        }).reset_index().rename(columns={
-            'Advertised ASIN': 'ASIN', 
-            'Spend': 'Ad Spends', 
-            '7 Day Total Sales ': 'Ad Sales', 
-            'Clicks': 'Ad Clicks'
-        })
+        sp_pivoted = sp_subset.groupby('Advertised ASIN').agg({'Spend': 'sum', '7 Day Total Sales ': 'sum', 'Clicks': 'sum'}).reset_index().rename(columns={'Advertised ASIN': 'ASIN', 'Spend': 'Ad Spends', '7 Day Total Sales ': 'Ad Sales', 'Clicks': 'Ad Clicks'})
 
-        # 3. Final Merge & Organic Calculation
         final_df = pd.merge(biz_processed, sp_pivoted, on='ASIN', how='left').fillna(0)
         final_df['Organic Sales'] = (final_df['Total Sales'] - final_df['Ad Sales']).clip(lower=0)
 
-        # --- SUMMARY SECTION ---
+        # --- 1. OVERALL SUMMARY ---
         st.divider()
-        st.subheader("🏢 Brand Performance Summary")
+        st.subheader("🌍 Overall Performance Summary")
+        total_sales = final_df['Total Sales'].sum()
+        total_ad_sales = final_df['Ad Sales'].sum()
+        total_organic = final_df['Organic Sales'].sum()
+        overall_contribution = (total_ad_sales / total_sales * 100) if total_sales > 0 else 0
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Overall Sales", f"{total_sales:,.2f} AED")
+        m2.metric("Organic Sales", f"{total_organic:,.2f} AED")
+        m3.metric("Ad Sales", f"{total_ad_sales:,.2f} AED")
+        m4.metric("Ad Contribution", f"{overall_contribution:.2f}%")
+
+        # --- 2. BRAND SUMMARY ---
+        st.divider()
+        st.subheader("🏢 Brand Wise Performance")
         
         brand_summary = final_df.groupby('Brand').agg({
             'Organic Sales': 'sum',
@@ -120,13 +104,18 @@ if biz_file and sp_file:
 
         brand_summary['Ad Contribution %'] = (brand_summary['Ad Sales'] / brand_summary['Total Sales'] * 100).round(2).fillna(0)
         
-        st.table(brand_summary.style.format({
+        # Sorting: Move 'Other' and 'NA' to last
+        priority_brands = brand_summary[~brand_summary['Brand'].isin(['Other', 'NA'])]
+        other_brands = brand_summary[brand_summary['Brand'].isin(['Other', 'NA'])]
+        brand_summary_sorted = pd.concat([priority_brands.sort_values('Total Sales', ascending=False), other_brands])
+
+        st.table(brand_summary_sorted.style.format({
             'Organic Sales': '{:,.2f} AED', 'Ad Sales': '{:,.2f} AED',
             'Total Sales': '{:,.2f} AED', 'Ad Spends': '{:,.2f} AED',
             'Ad Contribution %': '{:.2f}%'
         }))
 
-        # 4. Detailed Data Table
+        # --- 3. DETAILED DATA ---
         st.divider()
         st.subheader("📄 Product Level Detail")
         final_df = final_df[['ASIN', 'Brand', 'Item Type', 'Product Name', 'Total Orders', 'Total Sales', 'Ad Sales', 'Organic Sales', 'Ad Spends']]
