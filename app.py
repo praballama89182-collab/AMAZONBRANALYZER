@@ -12,6 +12,7 @@ st.write("Senior Executive View: Consolidated Brand and Category Analytics")
 def clean_currency(value):
     if pd.isna(value): return 0.0
     if isinstance(value, str):
+        # Remove AED, non-breaking spaces, and commas
         clean_val = value.replace('AED', '').replace('\xa0', '').replace(',', '').strip()
         try: return float(clean_val)
         except ValueError: return 0.0
@@ -67,13 +68,19 @@ if biz_file and sp_file:
         df = pd.merge(biz, sp_pivoted, on='ASIN', how='left').fillna(0)
         df['Organic Sales'] = (df['Total Sales'] - df['Ad Sales']).clip(lower=0)
 
-        # --- OVERALL SUMMARY ---
+        # --- OVERALL SUMMARY (UPDATED) ---
         st.divider()
-        ts, tas = df['Total Sales'].sum(), df['Ad Sales'].sum()
-        m1, m2, m3 = st.columns(3)
+        st.subheader("🌍 Overall Performance Summary")
+        ts = df['Total Sales'].sum()
+        tas = df['Ad Sales'].sum()
+        tspend = df['Ad Spends'].sum()
+        contribution = (tas / ts * 100) if ts > 0 else 0
+
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("Overall Sales", f"{ts:,.2f} AED")
         m2.metric("Ad Sales", f"{tas:,.2f} AED")
-        m3.metric("Ad Contribution", f"{(tas/ts*100):.2f}%" if ts > 0 else "0%")
+        m3.metric("Ad Spends", f"{tspend:,.2f} AED")
+        m4.metric("Ad Contribution", f"{contribution:.2f}%")
 
         # --- SIDE-BY-SIDE SUMMARIES ---
         st.divider()
@@ -82,17 +89,31 @@ if biz_file and sp_file:
         with sum_col1:
             st.subheader("🏢 Brand Summary")
             b_sum = df.groupby('Brand').agg({'Total Sales': 'sum', 'Ad Sales': 'sum', 'Ad Spends': 'sum'}).reset_index()
+            
+            # Filtering out brands with < 50 AED Total Sales
+            b_sum = b_sum[b_sum['Total Sales'] >= 50]
+            
             b_sum['Ad Contrib %'] = (b_sum['Ad Sales'] / b_sum['Total Sales'] * 100).round(1).fillna(0)
-            # Sort: Priority brands then NA/Other
+            
+            # Sort: Priority brands then NA/Other at bottom
             main = b_sum[~b_sum['Brand'].isin(['Other', 'NA'])].sort_values('Total Sales', ascending=False)
             tail = b_sum[b_sum['Brand'].isin(['Other', 'NA'])]
-            st.table(pd.concat([main, tail]).style.format({'Total Sales': '{:,.0f}', 'Ad Sales': '{:,.0f}', 'Ad Spends': '{:,.0f}', 'Ad Contrib %': '{:.1f}%'}))
+            st.table(pd.concat([main, tail]).style.format({
+                'Total Sales': '{:,.0f}', 
+                'Ad Sales': '{:,.0f}', 
+                'Ad Spends': '{:,.0f}', 
+                'Ad Contrib %': '{:.1f}%'
+            }))
 
         with sum_col2:
             st.subheader("📦 Item Type Summary")
             i_sum = df.groupby('Item Type').agg({'Total Sales': 'sum', 'Ad Sales': 'sum'}).reset_index()
             i_sum['Ad Contrib %'] = (i_sum['Ad Sales'] / i_sum['Total Sales'] * 100).round(1).fillna(0)
-            st.table(i_sum.sort_values('Total Sales', ascending=False).style.format({'Total Sales': '{:,.0f}', 'Ad Sales': '{:,.0f}', 'Ad Contrib %': '{:.1f}%'}))
+            st.table(i_sum.sort_values('Total Sales', ascending=False).style.format({
+                'Total Sales': '{:,.0f}', 
+                'Ad Sales': '{:,.0f}', 
+                'Ad Contrib %': '{:.1f}%'
+            }))
 
         # --- PRODUCT DETAIL ---
         st.divider()
