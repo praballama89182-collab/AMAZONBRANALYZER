@@ -6,21 +6,12 @@ import io
 st.set_page_config(page_title="Amazon Report Merger", layout="wide")
 
 st.title("📦 Amazon Report Merger Tool")
-st.write("Combine Business & Sponsored Reports with Item Type mapping.")
-
-# ASIN to Item Type Mapping
-ASIN_MAP = {
-    'B00D7J0M2W': 'Perfume', 'B006YXYO7K': 'Perfume', 'B007A3OEQ0': 'Perfume', 
-    'B007CSTQ0W': 'Perfume', 'B006Z2K2Q8': 'Perfume', 'B007A3T3UK': 'Perfume', 
-    'B006YZZJ00': 'Perfume', 'B00BUPY75W': 'Perfume', 'B008I79F88': 'Perfume', 
-    'B006Z2U9O8': 'Perfume', 'B08CDJDNG8': 'Hair Care', 'B0DCN9WXTC': 'Hair Care',
-    'B0F9T5D6D7': 'Hair Care', 'B0F8HKW1MF': 'Skin Care'
-}
+st.write("Combine Business & Sponsored Reports with Brand & Item Classification.")
 
 def clean_currency(value):
-    """Removes AED, non-breaking spaces, and commas."""
     if pd.isna(value): return 0.0
     if isinstance(value, str):
+        # Remove AED, non-breaking spaces, and commas
         clean_val = value.replace('AED', '').replace('\xa0', '').replace(',', '').strip()
         try:
             return float(clean_val)
@@ -28,8 +19,33 @@ def clean_currency(value):
             return 0.0
     return float(value)
 
+def get_brand(title):
+    """Extracts the brand name from the title, mapping Avenue to Maison."""
+    title_upper = str(title).upper()
+    if 'PARIS COLLECTION' in title_upper: return 'Paris Collection'
+    if 'CP TRENDIES' in title_upper or 'CPT' in title_upper: return 'CP Trendies'
+    if 'CREATION LAMIS' in title_upper: return 'Creation Lamis'
+    if 'JEAN PAUL DUPONT' in title_upper: return 'Jean Paul Dupont'
+    if 'DORALL COLLECTION' in title_upper: return 'Dorall Collection'
+    if 'AVENUE' in title_upper: return "Maison de L'Avenir"
+    return 'Other'
+
+def classify_item_type(title):
+    """Categorizes items strictly. No General Perfume."""
+    title = str(title).lower()
+    if 'eau de parfum' in title or ' edp' in title:
+        return 'Eau de Parfum'
+    if 'eau de toilette' in title or ' edt' in title:
+        return 'Eau de Toilette'
+    if any(k in title for k in ['makeup', 'lipstick', 'nail polish', 'eyebrow', 'blusher', 'compact powder']):
+        return 'Makeup'
+    if any(k in title for k in ['hair cream', 'hair food', 'hair serum', 'hair care']):
+        return 'Hair Care'
+    if any(k in title for k in ['body lotion', 'body scrub', 'aloe vera gel', 'glycerin', 'moisturizer']):
+        return 'Skin Care'
+    return 'NA'
+
 def load_data(file):
-    """Helper to load CSV or Excel files."""
     if file.name.lower().endswith('.csv'):
         return pd.read_csv(file)
     else:
@@ -44,23 +60,23 @@ with col2:
 
 if biz_file and sp_file:
     try:
-        # Load Data
         biz_df = load_data(biz_file)
         sp_df = load_data(sp_file)
 
-        # 1. Process Business Report (Parent)
+        # 1. Process Business Report
         biz_processed = biz_df[['(Child) ASIN', 'Units Ordered', 'Ordered Product Sales', 'Title']].copy()
         biz_processed['Ordered Product Sales'] = biz_processed['Ordered Product Sales'].apply(clean_currency)
         
+        # 2. Add Brand (with Avenue -> Maison mapping) and Item Type
+        biz_processed['Brand'] = biz_processed['Title'].apply(get_brand)
+        biz_processed['Item Type'] = biz_processed['Title'].apply(classify_item_type)
+
         biz_processed = biz_processed.rename(columns={
             '(Child) ASIN': 'ASIN',
             'Title': 'Product Name',
             'Units Ordered': 'Total Orders',
             'Ordered Product Sales': 'Total Sales'
         })
-
-        # 2. Add Item Type (Mapping)
-        biz_processed['Item Type'] = biz_processed['ASIN'].map(ASIN_MAP).fillna('NA')
 
         # 3. Process Sponsored Product Report
         sp_subset = sp_df[['Advertised ASIN', 'Spend', '7 Day Total Sales ', 'Clicks']].copy()
@@ -78,10 +94,18 @@ if biz_file and sp_file:
         final_df = pd.merge(biz_processed, sp_pivoted, on='ASIN', how='left')
         final_df[['Ad Spends', 'Ad Clicks', 'Ad Sales']] = final_df[['Ad Spends', 'Ad Clicks', 'Ad Sales']].fillna(0)
 
-        # Final Column Order (with Item Type included)
-        final_df = final_df[['ASIN', 'Item Type', 'Product Name', 'Total Orders', 'Total Sales', 'Ad Spends', 'Ad Clicks', 'Ad Sales']]
+        # Final Column Order
+        final_df = final_df[['ASIN', 'Brand', 'Item Type', 'Product Name', 'Total Orders', 'Total Sales', 'Ad Spends', 'Ad Clicks', 'Ad Sales']]
 
         st.subheader("Final Combined Report Preview")
+        
+        # Summary View
+        c1, c2 = st.columns(2)
+        c1.write("Brand Breakdown:")
+        c1.write(final_df['Brand'].value_counts())
+        c2.write("Item Type Breakdown:")
+        c2.write(final_df['Item Type'].value_counts())
+        
         st.dataframe(final_df, use_container_width=True)
 
         # Export
@@ -90,5 +114,3 @@ if biz_file and sp_file:
 
     except Exception as e:
         st.error(f"Error: {e}")
-else:
-    st.info("Please upload both reports to proceed.")
